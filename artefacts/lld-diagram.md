@@ -1,87 +1,88 @@
-# LLD-диаграмма системы
+# LLD — новая фича в ЛК родителя
 
-Диаграмма нижнего уровня: сервисы, компоненты и потоки данных, необходимые для реализации фичи.
+LLD описывает только архитектуру и процесс новой фичи (импорт школьных оценок → анализ пробелов → рекомендации), в разрезе ЛК родителя. Остальные роли и модули платформы (учитель, ученик, аутентификация, подписки, аналитика) не входят в этот процесс.
+
+## Компонентная диаграмма и поток данных
 
 ```mermaid
 flowchart TB
-    subgraph Client["Клиентская часть"]
-        ParentLK[ЛК родителя]
-        StudentLK[ЛК ученика]
+    subgraph ParentLK["ЛК родителя"]
+        UploadUI[Экран загрузки<br/>школьных оценок]
+        GapsUI[Экран «Пробелы<br/>и рекомендации»]
+        InterestUI[Блок «Возможности<br/>для ребёнка»]
     end
 
-    subgraph Gateway["API Gateway / BFF"]
-        GW[API Gateway]
-    end
-
-    subgraph Core["Основные сервисы платформы"]
-        AuthSvc[Auth Service]
-        SubSvc[Subscription Service]
-        PlatformGrades[(Platform Grades DB<br/>оценки внутри Учи.ру)]
-    end
-
-    subgraph Feature["Новая фича"]
+    subgraph FeatureCore["Сервисы фичи"]
         Ingest[School Grades<br/>Ingestion Service]
-        SchoolGrades[(School Grades DB)]
         GapEngine[Gap Analysis Engine]
-        TaskRec[Task Recommendation<br/>Engine - закрепление тем]
+        TaskRec[Task Recommendation<br/>Engine]
         InterestRec[Interest / Career<br/>Recommendation Engine]
+    end
+
+    subgraph Data["Хранилища данных"]
+        SchoolGrades[(School Grades DB)]
+        PlatformGrades[(Platform Grades DB<br/>существующие данные Учи.ру)]
         ContentCatalog[(Content & Courses<br/>Catalog)]
     end
 
-    subgraph Analytics["Аналитика и эксперименты"]
-        EventCollector[Event Tracking Service]
-        DWH[(Data Warehouse<br/>Hive / ClickHouse)]
-        ExpService[Experiment Assignment<br/>Service - ЦГ / КГ]
-        MetricsJob[Metrics Computation<br/>North Star + доп. метрики]
-        BI[BI / Дашборды]
-    end
+    UploadUI -->|фото / ручной ввод<br/>школьных оценок| Ingest
+    Ingest -->|валидация и запись| SchoolGrades
 
-    ParentLK -->|логин| GW
-    StudentLK -->|логин| GW
-    GW --> AuthSvc
-    GW --> SubSvc
-    GW --> ExpService
-
-    ExpService -->|флаг ЦГ/КГ| ParentLK
-
-    ParentLK -->|загрузка оценок<br/>фото / ручной ввод| Ingest
-    Ingest --> SchoolGrades
-    Ingest --> GapEngine
-    PlatformGrades --> GapEngine
     SchoolGrades --> GapEngine
+    PlatformGrades --> GapEngine
 
-    GapEngine -->|выявленные пробелы| TaskRec
+    GapEngine -->|слабые темы| TaskRec
     GapEngine -->|сильные темы| InterestRec
-    TaskRec --> ContentCatalog
-    InterestRec --> ContentCatalog
 
-    TaskRec -->|рекомендации заданий| ParentLK
-    InterestRec -->|курсы / статьи| ParentLK
+    TaskRec -->|подбор заданий| ContentCatalog
+    InterestRec -->|подбор курсов / статей| ContentCatalog
 
-    ParentLK -->|события: открытие ЛК,<br/>переход по вкладкам,<br/>клик по подписке| EventCollector
-    SubSvc -->|событие оплаты| EventCollector
-    EventCollector --> DWH
+    TaskRec -->|рекомендованные задания| GapsUI
+    InterestRec -->|рекомендованный контент| InterestUI
+```
 
-    DWH --> MetricsJob
-    MetricsJob --> BI
-    ExpService --> DWH
+## Процесс по шагам (sequence)
+
+```mermaid
+sequenceDiagram
+    participant P as Родитель (ЛК)
+    participant I as Ingestion Service
+    participant SG as School Grades DB
+    participant PG as Platform Grades DB
+    participant G as Gap Analysis Engine
+    participant TR as Task Recommendation
+    participant IR as Interest Recommendation
+
+    P->>I: Загружает школьные оценки
+    I->>SG: Валидирует и сохраняет
+    I-->>P: Подтверждение загрузки
+
+    G->>SG: Забирает школьные оценки
+    G->>PG: Забирает оценки платформы
+    G->>G: Сопоставляет и находит<br/>пробелы / сильные темы
+
+    G->>TR: Передаёт слабые темы
+    G->>IR: Передаёт сильные темы
+
+    TR-->>P: Задания для закрепления пробелов
+    IR-->>P: Курсы / статьи по сильным темам
 ```
 
 ## Пояснение к компонентам
 
 | Компонент | Назначение |
 |---|---|
-| **ЛК родителя** | Основной интерфейс: успеваемость, школьные оценки, пробелы, рекомендации, подписка |
-| **API Gateway** | Единая точка входа, маршрутизация запросов, применение флага эксперимента (ЦГ/КГ) |
-| **School Grades Ingestion Service** | Приём и валидация загруженных школьных оценок (ручной ввод/фото/интеграция с эл. дневником) |
-| **Gap Analysis Engine** | Сопоставляет школьные и платформенные оценки, определяет проблемные и сильные темы |
-| **Task Recommendation Engine** | Подбирает задания/материалы платформы под выявленные пробелы |
-| **Interest/Career Recommendation Engine** | На основе сильных предметов предлагает курсы, статьи, профориентационный контент |
-| **Event Tracking Service** | Логирует поведенческие события родителя в ЛК (сессии, вкладки, клики на подписку) |
-| **Experiment Assignment Service** | Распределяет пользователей целевого сегмента на ЦГ/КГ и хранит назначение |
-| **Metrics Computation** | Считает North Star и вспомогательные метрики с нужными срезами (подписка есть/нет, версия подписки) |
-| **BI / Дашборды** | Визуализация метрик для оценки результатов эксперимента |
+| **Экран загрузки школьных оценок** | Точка входа: родитель или ребёнок вносит реальные школьные оценки (фото дневника / ручной ввод) |
+| **School Grades Ingestion Service** | Принимает, валидирует и нормализует загруженные оценки перед сохранением |
+| **School Grades DB** | Хранилище школьных оценок, отдельное от оценок платформы |
+| **Platform Grades DB** | Существующее хранилище результатов ребёнка внутри Учи.ру |
+| **Gap Analysis Engine** | Сопоставляет школьные и платформенные оценки: находит темы, где ребёнок «просаживается» в школе, но платформа этого не видит, а также сильные темы |
+| **Task Recommendation Engine** | По слабым темам подбирает конкретные задания/материалы платформы для закрепления |
+| **Interest / Career Recommendation Engine** | По сильным темам подбирает внешний развивающий контент (курсы, статьи, профориентация) |
+| **Content & Courses Catalog** | Справочник заданий платформы и внешнего контента, из которого берутся рекомендации |
+| **Экран «Пробелы и рекомендации»** | Отображает родителю выявленные пробелы и предложенные задания |
+| **Блок «Возможности для ребёнка»** | Отображает родителю рекомендации по сильным сторонам ребёнка |
 
-## Потенциальные точки роста
-- Интеграция `School Grades Ingestion Service` с электронными дневниками школ (API), а не только ручной ввод — снижает шум в данных.
-- `Interest/Career Recommendation Engine` в перспективе может стать ML-моделью (сейчас — правило-ориентированный слой поверх каталога контента).
+## Точки роста
+- `Ingestion Service` в будущем может получать оценки не только вручную, но и через интеграцию с электронным дневником школы (API).
+- `Interest / Career Recommendation Engine` сейчас — правило-ориентированный слой поверх каталога контента, в перспективе может быть заменён на ML-модель.
